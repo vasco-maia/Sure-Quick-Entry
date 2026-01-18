@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1c1c1e">
+  <title>Quick Entry</title>
+  
+  <!-- 
+    SECURITY NOTE: These scripts are loaded from CDNs.
+    Consider adding Subresource Integrity (SRI) hashes for production.
+    See: https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity
+  -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  
+  <style>
+    * { box-sizing: border-box; }
+    body { 
+      margin: 0; 
+      background: #0a0a0a;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Segoe UI', Roboto, sans-serif;
+    }
+    select option { background: #1c1c1e; color: #fff; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    
+    function App() {
+      // Configuration state
+      const [config, setConfig] = useState({ url: '', token: '' });
+      const [showConfig, setShowConfig] = useState(false);
+      const [isConfigured, setIsConfigured] = useState(false);
+      
+      // Data state
+      const [accounts, setAccounts] = useState([]);
+      const [categories, setCategories] = useState([]);
+      const [merchants, setMerchants] = useState([]);
+      const [tags, setTags] = useState([]);
+      
+      // UI state
+      const [loading, setLoading] = useState(false);
+      const [submitting, setSubmitting] = useState(false);
+      const [message, setMessage] = useState(null);
+      const [showMore, setShowMore] = useState(false);
+      
+      // Transaction form state
+      const [transaction, setTransaction] = useState({
+        nature: 'expense',
+        amount: '',
+        name: '',
+        account_id: '',
+        category_id: '',
+        merchant_id: '',
+        tag_ids: [],
+        date: new Date().toISOString().split('T')[0],
+        notes: ''
+      });
+      
+      const selectedAccount = accounts.find(a => a.id === transaction.account_id);
+      
+      // Load saved configuration on mount
+      useEffect(() => {
+        const saved = localStorage.getItem('sureConfig');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setConfig(parsed);
+          if (parsed.url && parsed.token) {
+            setIsConfigured(true);
+            fetchData(parsed);
+          }
+        } else {
+          setShowConfig(true);
+        }
+      }, []);
+      
+      // API helper function
+      const apiCall = async (cfg, endpoint) => {
+        const res = await fetch('/api' + endpoint, {
+          headers: { 
+            'X-API-Key': cfg.token, 
+            'Accept': 'application/json' 
+          }
+        });
+        if (!res.ok) throw new Error('API error: ' + res.status);
+        return res.json();
+      };
+      
+      // Fetch all data from Sure Finance
+      const fetchData = async (cfg) => {
+        setLoading(true);
+        try {
+          const [accountsRes, categoriesRes, merchantsRes, tagsRes] = await Promise.all([
+            apiCall(cfg, '/v1/accounts?per_page=100'),
+            apiCall(cfg, '/v1/categories?per_page=100'),
+            apiCall(cfg, '/v1/merchants'),
+            apiCall(cfg, '/v1/tags')
+          ]);
+          
+          const accts = accountsRes.accounts || [];
+          setAccounts(accts);
+          setCategories(categoriesRes.categories || []);
+          setMerchants(merchantsRes || []);
+          setTags(tagsRes || []);
+          
+          // Auto-select first account
+          if (accts.length > 0) {
+            setTransaction(t => ({ ...t, account_id: accts[0].id }));
+          }
+        } catch (e) {
+          setMessage({ type: 'error', text: 'Connection failed: ' + e.message });
+        }
+        setLoading(false);
+      };
+      
+      // Save configuration
+      const saveConfig = () => {
+        if (!config.token) { 
+          setMessage({ type: 'error', text: 'API Key required' }); 
+          return; 
+        }
+        const cleanConfig = { ...config, url: config.url.replace(/\/$/, '') };
+        localStorage.setItem('sureConfig', JSON.stringify(cleanConfig));
+        setConfig(cleanConfig);
+        setIsConfigured(true);
+        setShowConfig(false);
+        fetchData(cleanConfig);
+      };
+      
+      // Submit transaction to Sure Finance
+      const submitTransaction = async () => {
+        if (!transaction.amount || !transaction.name || !transaction.account_id) {
+          setMessage({ type: 'error', text: 'Fill in amount, description and account' });
+          return;
+        }
+        
+        setSubmitting(true);
+        try {
+          const payload = {
+            transaction: {
+              account_id: transaction.account_id,
+              date: transaction.date,
+              amount: parseFloat(transaction.amount),
+              name: transaction.name,
+              nature: transaction.nature,
+              notes: transaction.notes || null,
+              category_id: transaction.category_id || null,
+              merchant_id: transaction.merchant_id || null,
+              tag_ids: transaction.tag_ids.length > 0 ? transaction.tag_ids : null
+            }
+          };
+          
+          const res = await fetch('/api/v1/transactions', {
+            method: 'POST',
+            headers: { 
+              'X-API-Key': config.token, 
+              'Content-Type': 'application/json' 
+            },
+            body: JSON.stringify(payload)
+          });
+          
+          if (!res.ok) throw new Error('Failed to save');
+          
+          setMessage({ type: 'success', text: 'Saved!' });
+          
+          // Refresh data and reset form
+          fetchData(config);
+          setTransaction(t => ({
+            ...t, 
+            amount: '', 
+            name: '', 
+            notes: '', 
+            category_id: '', 
+            merchant_id: '', 
+            tag_ids: [],
+            date: new Date().toISOString().split('T')[0]
+          }));
+          
+          setTimeout(() => setMessage(null), 2000);
+        } catch (e) {
+          setMessage({ type: 'error', text: e.message });
+        }
+        setSubmitting(false);
+      };
+      
+      // ========== CONFIG SCREEN ==========
+      if (showConfig) {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-6">
+            <div className="w-full max-w-sm">
+              <div className="text-center mb-8">
+                <div className="w-16 h-16 bg-gradient-to-br from-emerald-400 to-teal-500 rounded-2xl mx-auto mb-4 flex items-center justify-center">
+                  <span className="text-2xl font-bold text-white">S</span>
+                </div>
+                <h1 className="text-2xl font-semibold text-white">Sure Quick Entry</h1>
+                <p className="text-zinc-500 mt-2">Connect to your Sure Finance</p>
+              </div>
+              
+              <div className="space-y-4">
+                <input
+                  type="text"
+                  value={config.token}
+                  onChange={(e) => setConfig({ ...config, token: e.target.value })}
+                  placeholder="Paste your API Key"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-4 text-white placeholder-zinc-600 focus:outline-none focus:border-emerald-500 text-center font-mono text-sm"
+                />
+                <button
+                  onClick={saveConfig}
+                  className="w-full bg-emerald-500 hover:bg-emerald-400 text-black font-semibold py-4 rounded-xl transition"
+                >
+                  Connect
+                </button>
+              </div>
+              
+              {message && (
+                <p className={`mt-4 text-center text-sm ${message.type === 'error' ? 'text-red-400' : 'text-emerald-400'}`}>
+                  {message.text}
+                </p>
+              )}
+            </div>
+          </div>
+        );
+      }
+      
+      // ========== LOADING SCREEN ==========
+      if (loading) {
+        return (
+          <div className="min-h-screen flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        );
+      }
+      
+      // ========== MAIN UI ==========
+      return (
+        <div className="min-h-screen pb-32">
+          {/* Header */}
+          <div className="sticky top-0 bg-black/80 backdrop-blur-xl border-b border-zinc-800/50 px-4 py-3 flex items-center justify-between z-10">
+            <h1 className="text-lg font-semibold text-white">New Transaction</h1>
+            <button onClick={() => setShowConfig(true)} className="text-zinc-500 hover:text-white text-sm">
+              Settings
+            </button>
+          </div>
+          
+          {/* Message Toast */}
+          {message && (
+            <div className={`mx-4 mt-4 p-3 rounded-xl text-sm text-center ${message.type === 'error' ? 'bg-red-500/10 text-red-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
+              {message.text}
+            </div>
+          )}
+          
+          <div className="p-4 space-y-4">
+            {/* Type Toggle */}
+            <div className="bg-zinc-900 rounded-xl p-1 flex">
+              <button
+                onClick={() => setTransaction(t => ({ ...t, nature: 'expense' }))}
+                className={`flex-1 py-3 rounded-lg font-medium transition text-sm ${transaction.nature === 'expense' ? 'bg-red-500/20 text-red-400' : 'text-zinc-500'}`}
+              >
+                Expense
+              </button>
+              <button
+                onClick={() => setTransaction(t => ({ ...t, nature: 'income' }))}
+                className={`flex-1 py-3 rounded-lg font-medium transition text-sm ${transaction.nature === 'income' ? 'bg-emerald-500/20 text-emerald-400' : 'text-zinc-500'}`}
+              >
+                Income
+              </button>
+            </div>
+            
+            {/* Amount Input */}
+            <div className="bg-zinc-900 rounded-2xl p-6">
+              <div className="flex items-center justify-center gap-1">
+                <span className="text-3xl text-zinc-500">€</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  value={transaction.amount}
+                  onChange={(e) => setTransaction({ ...transaction, amount: e.target.value })}
+                  placeholder="0.00"
+                  className="bg-transparent text-5xl font-light text-white text-center focus:outline-none w-48"
+                  style={{ appearance: 'textfield' }}
+                />
+              </div>
+            </div>
+            
+            {/* Account Selector */}
+            <div className="bg-zinc-900 rounded-xl overflow-hidden">
+              <label className="block px-4 pt-3 text-xs text-zinc-500 uppercase tracking-wide">Account</label>
+              <select
+                value={transaction.account_id}
+                onChange={(e) => setTransaction({ ...transaction, account_id: e.target.value })}
+                className="w-full bg-transparent text-white px-4 py-3 focus:outline-none appearance-none cursor-pointer"
+              >
+                {accounts.map(a => (
+                  <option key={a.id} value={a.id}>{a.name} • {a.balance}</option>
+                ))}
+              </select>
+            </div>
+            
+            {/* Description Input */}
+            <div className="bg-zinc-900 rounded-xl overflow-hidden">
+              <label className="block px-4 pt-3 text-xs text-zinc-500 uppercase tracking-wide">Description</label>
+              <input
+                type="text"
+                value={transaction.name}
+                onChange={(e) => setTransaction({ ...transaction, name: e.target.value })}
+                placeholder="What was this for?"
+                className="w-full bg-transparent text-white px-4 py-3 focus:outline-none placeholder-zinc-600"
+              />
+            </div>
+            
+            {/* Date Input */}
+            <div className="bg-zinc-900 rounded-xl overflow-hidden">
+              <label className="block px-4 pt-3 text-xs text-zinc-500 uppercase tracking-wide">Date</label>
+              <input
+                type="date"
+                value={transaction.date}
+                onChange={(e) => setTransaction({ ...transaction, date: e.target.value })}
+                className="w-full bg-transparent text-white px-4 py-3 focus:outline-none"
+              />
+            </div>
+            
+            {/* More Options Toggle */}
+            <button
+              onClick={() => setShowMore(!showMore)}
+              className="w-full text-center text-zinc-500 text-sm py-2"
+            >
+              {showMore ? '− Less options' : '+ More options'}
+            </button>
+            
+            {/* Extended Options */}
+            {showMore && (
+              <div className="space-y-4">
+                {/* Category Selector */}
+                <div className="bg-zinc-900 rounded-xl overflow-hidden">
+                  <label className="block px-4 pt-3 text-xs text-zinc-500 uppercase tracking-wide">Category</label>
+                  <select
+                    value={transaction.category_id}
+                    onChange={(e) => setTransaction({ ...transaction, category_id: e.target.value })}
+                    className="w-full bg-transparent text-white px-4 py-3 focus:outline-none appearance-none cursor-pointer"
+                  >
+                    <option value="">None</option>
+                    {categories.filter(c => c.classification === transaction.nature || !c.classification).map(c => (
+                      <option key={c.id} value={c.id}>{c.parent ? c.parent.name + ' → ' : ''}{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                {/* Merchant Selector */}
+                {merchants.length > 0 && (
+                  <div className="bg-zinc-900 rounded-xl overflow-hidden">
+                    <label className="block px-4 pt-3 text-xs text-zinc-500 uppercase tracking-wide">Merchant</label>
+                    <select
+                      value={transaction.merchant_id}
+                      onChange={(e) => setTransaction({ ...transaction, merchant_id: e.target.value })}
+                      className="w-full bg-transparent text-white px-4 py-3 focus:outline-none appearance-none cursor-pointer"
+                    >
+                      <option value="">None</option>
+                      {merchants.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                  </div>
+                )}
+                
+                {/* Tags Selector */}
+                {tags.length > 0 && (
+                  <div className="bg-zinc-900 rounded-xl p-4">
+                    <label className="block text-xs text-zinc-500 uppercase tracking-wide mb-3">Tags</label>
+                    <div className="flex flex-wrap gap-2">
+                      {tags.map(tag => (
+                        <button
+                          key={tag.id}
+                          onClick={() => setTransaction(t => ({
+                            ...t,
+                            tag_ids: t.tag_ids.includes(tag.id) 
+                              ? t.tag_ids.filter(id => id !== tag.id) 
+                              : [...t.tag_ids, tag.id]
+                          }))}
+                          className={`px-3 py-1.5 rounded-lg text-sm transition ${transaction.tag_ids.includes(tag.id) ? 'text-white' : 'bg-zinc-800 text-zinc-400'}`}
+                          style={transaction.tag_ids.includes(tag.id) ? { backgroundColor: tag.color } : {}}
+                        >
+                          {tag.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {/* Notes Input */}
+                <div className="bg-zinc-900 rounded-xl overflow-hidden">
+                  <label className="block px-4 pt-3 text-xs text-zinc-500 uppercase tracking-wide">Notes</label>
+                  <textarea
+                    value={transaction.notes}
+                    onChange={(e) => setTransaction({ ...transaction, notes: e.target.value })}
+                    placeholder="Add a note..."
+                    rows={2}
+                    className="w-full bg-transparent text-white px-4 py-3 focus:outline-none placeholder-zinc-600 resize-none"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          
+          {/* Submit Button (Fixed at bottom) */}
+          <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black via-black to-transparent">
+            <button
+              onClick={submitTransaction}
+              disabled={submitting || !transaction.amount || !transaction.name}
+              className={`w-full py-4 rounded-xl font-semibold text-lg transition ${
+                submitting || !transaction.amount || !transaction.name
+                  ? 'bg-zinc-800 text-zinc-600'
+                  : transaction.nature === 'expense'
+                    ? 'bg-red-500 hover:bg-red-400 text-white'
+                    : 'bg-emerald-500 hover:bg-emerald-400 text-black'
+              }`}
+            >
+              {submitting ? 'Saving...' : (transaction.nature === 'expense' ? 'Add Expense' : 'Add Income')}
+            </button>
+          </div>
+        </div>
+      );
+    }
+    
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>

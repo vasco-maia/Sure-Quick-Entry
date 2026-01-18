@@ -1,0 +1,16 @@
+services:
+  sure-quick:
+    image: nginx:alpine
+    container_name: sure-quick
+    restart: unless-stopped
+    volumes:
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+      - ./manifest.json:/usr/share/nginx/html/manifest.json:ro
+      - ./icon-192.png:/usr/share/nginx/html/icon-192.png:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - stack_default
+
+networks:
+  stack_default:
+    external: true
